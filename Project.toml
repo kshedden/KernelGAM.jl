@@ -1,0 +1,10 @@
+name = "KernelGAM"
+uuid = "5b8b752b-0d9e-4b21-a499-a85176302ea7"
+authors = ["Kerby Shedden <kshedden@umich.edu>"]
+version = "0.1.0"
+
+[deps]
+KernelFunctions = "ec8451be-7e33-11e9-00cf-bbf324bd1392"
+KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
