@@ -24,6 +24,25 @@ mutable struct KReg{T<:Real}
 
     # The dimension of the sketch, or dimension to retain in the specral truncation.
     r::Int
+
+    # The fitted values
+    yhat::Vector{T}
+
+    # The coefficients of the linear predictor
+    alpha::Vector{T}
+
+    # Map from y to alpha
+    y_alpha::Matrix{T}
+
+    kreduce::Matrix{T}
+end
+
+function KReg(y, X, ker, lam, r)
+
+    length(y) == size(X, 1) ||
+        throw(error("Length of y must match the number of rows of X"))
+
+    return KReg(y, X, ker, lam, r, zeros(0), zeros(0), zeros(0, 0), zeros(0, 0))
 end
 
 
@@ -34,17 +53,29 @@ mutable struct KGAM{T<:Real}
 
     # Each additive component of the GAM, represented as a kernel regression
     KR::Vector{KReg}
+
+    # Mean of the observed response values
+    ybar::T
+
+    # Fitted values
+    yhat::Vector{T}
+
+    # Fitted values for each additive component
+    fitval::Matrix{T}
 end
 
+function KGAM(y::Vector, KR::Vector{KReg})
+    n = length(y)
+    q = length(KR)
+    return KGAM(y, KR, 0.0, zeros(n), zeros(n, q))
+end
 
 # Fit using spectral truncation.
-function fit_spect(kr::KReg, krylov = true)
+function fit_spect!(kr::KReg, krylov = true)
 
     (; y, X, ker, lam, r) = kr
 
     n = length(y)
-    size(X, 1) == n || throw(error("length of y must equal the number of rows of x"))
-
     K = Symmetric(kernelmatrix(ker, X')) / n
 
     Ur, Dr = if krylov
@@ -68,30 +99,36 @@ function fit_spect(kr::KReg, krylov = true)
         Ur, Dr
     end
 
-    m_alpha = (I(r) + lam * Diagonal(1 ./ Dr)) \ (Ur' / sqrt(n))
-    alpha = m_alpha * y
-    yhat = sqrt(n) * Ur * alpha
+    kr.y_alpha = (I(r) + lam * Diagonal(1 ./ Dr)) \ (Ur' / sqrt(n))
+    kr.alpha = kr.y_alpha * y
+    kr.yhat = sqrt(n) * Ur * kr.alpha
+    kr.kreduce = sqrt(n) * Diagonal(1 ./ Dr) * Ur'
+end
 
-    kf = function (z)
-        v = [ker(z, x) for x in eachrow(X)] / n
-        v = sqrt(n) * Diagonal(1 ./ Dr) * Ur' * v
-        return dot(alpha, v), v
-    end
+# predict with no arguments returns fitted values on the training data.
+function predict(kr::KReg)
+    return kr.yhat
+end
 
-    return kf, yhat, m_alpha
+function predict_wts(kr::KReg, x)
+    n = size(kr.X, 1)
+    v = [kr.ker(z, x) for z in eachrow(kr.X)] / n
+    return kr.kreduce * v
+end
+
+function predict(kr::KReg, x)
+    return kr.alpha' * predict_wts(kr, x)
 end
 
 # Fit using random sketching.
-function fit_sketch(kr::KReg)
+function fit_sketch!(kr::KReg)
 
     (; y, X, ker, lam, r) = kr
 
     n = length(y)
-    size(X, 1) == n || throw(error("length of y must equal the number of rows of x"))
-
     S = randn(n, r) / r^0.25
 
-    KS = if n > 5000
+    KS = if n > 10000
         # This path is very slow but saves memory
         KS = zeros(n, r)
         for i = 1:n
@@ -112,52 +149,47 @@ function fit_sketch(kr::KReg)
     M = Symmetric(KS' * KS)
     F = Symmetric(S' * KS)
 
-    m_alpha = ((M + 2 * lam * F) \ KS') / sqrt(n)
-    alpha = m_alpha * y
-    yhat = sqrt(n) * KS * alpha
-
-    # Prediction function
-    kf = function (z)
-        v = [ker(z, x) for x in eachrow(X)] / n
-        vs = sqrt(n) * S' * v
-        return dot(vs, alpha), vs
-    end
-
-    return kf, yhat, m_alpha
+    kr.y_alpha = ((M + 2 * lam * F) \ KS') / sqrt(n)
+    kr.alpha = kr.y_alpha * y
+    kr.yhat = sqrt(n) * KS * kr.alpha
+    kr.kreduce = sqrt(n) * S'
 end
 
-function fit(kr::KReg; r::Int = -1, method::Symbol = :sketch, args...)
+function fit!(kr::KReg; r::Int = -1, method::Symbol = :sketch, args...)
     if method == :sketch
         r = r < 0 ? 100 : r
-        return fit_sketch(kr; args...)
+        fit_sketch!(kr; args...)
     elseif method == :spect
         r = r < 0 ? 20 : r
-        return fit_spect(kr; args...)
+        fit_spect!(kr; args...)
     else
         raise(error("unknown method"))
     end
 end
 
-function fit(kg::KGAM; maxiter = 10)
+function fit!(kg::KGAM; maxiter = 10)
 
-    (; y, KR) = kg
-
-    ybar = mean(y)
-    yc = y .- ybar
+    (; y, KR, fitval) = kg
 
     n = length(y)
-    fv = zeros(n, length(KR))
+    ybar = mean(y)
+    kg.ybar = ybar
+    yc = y .- ybar
 
     for itr = 1:maxiter
         for j in eachindex(KR)
             jj = [k for k in eachindex(KR) if k != j]
-            resid = yc - sum(fv[:, jj], dims = 2)
+            resid = yc - sum(fitval[:, jj], dims = 2)
             KR[j].y .= resid
-            _, fv[:, j], _ = fit(KR[j])
-            fv[:, j] .-= mean(fv[:, j])
+            fit!(KR[j])
+            fitval[:, j] = predict(KR[j])
+            fitval[:, j] .-= mean(fitval[:, j])
         end
     end
 
-    yhat = ybar .+ sum(fv, dims = 2)
-    return yhat, fv
+    kg.yhat .= ybar .+ sum(fitval, dims = 2)[:]
+end
+
+function predict(kg::KGAM)
+    return kg.yhat
 end

@@ -27,8 +27,9 @@ using KernelGAM, Test, KernelFunctions, StableRNGs, Suppressor
                 kr = KReg(y, X, ker, lam, r[method])
                 yhat = nothing
                 @suppress begin
-                    _, yhat = fit(kr; method = method)
+                    fit!(kr; method = method)
                 end
+                yhat = predict(kr)
 
                 mse += sum(abs2, yhat - ey) / n
             end
@@ -63,9 +64,10 @@ end
             y = ey + randn(rng, n)
 
             kr = KReg(y, X, ker, lam, r)
-            f, yhat, _ = fit(kr; method = method)
+            fit!(kr; method = method)
+            yhat = predict(kr)
 
-            yhat2 = [f(x)[1] for x in eachrow(X)]
+            yhat2 = [predict(kr, x) for x in eachrow(X)]
             @test isapprox(yhat, yhat2)
         end
     end
@@ -89,7 +91,9 @@ end
     push!(KR, KReg(y, X[:, 2:3], ker, lam, r))
 
     kg = KGAM(y, KR)
-    yhat, fv = fit(kg)
+    fit!(kg)
+    yhat = predict(kg)
+    fv = kg.fitval
 
     rmse1 = sqrt(sum(abs2, X[:, 1] - fv[:, 1]) / n)
     rmse2 = sqrt(sum(abs2, -X[:, 2] .* X[:, 3] - fv[:, 2]) / n)
